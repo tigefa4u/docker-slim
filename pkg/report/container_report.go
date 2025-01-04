@@ -11,20 +11,29 @@ type ArtifactType int
 
 // Artifact type ID constants
 const (
-	DirArtifactType     = 1
-	FileArtifactType    = 2
-	SymlinkArtifactType = 3
-	UnknownArtifactType = 99
+	DirArtifactType     ArtifactType = 1
+	FileArtifactType    ArtifactType = 2
+	SymlinkArtifactType ArtifactType = 3
+	UnknownArtifactType ArtifactType = 99
+)
+
+const (
+	DirArtifactTypeName        = "dir"
+	FileArtifactTypeName       = "file"
+	SymlinkArtifactTypeName    = "symlink"
+	HardlinkArtifactTypeName   = "hardlink"
+	UnknownArtifactTypeName    = "unknown"
+	UnexpectedArtifactTypeName = "unexpected"
 )
 
 // DefaultContainerReportFileName is the default container report file name
 const DefaultContainerReportFileName = "creport.json"
 
 var artifactTypeNames = map[ArtifactType]string{
-	DirArtifactType:     "Dir",
-	FileArtifactType:    "File",
-	SymlinkArtifactType: "Symlink",
-	UnknownArtifactType: "Unknown",
+	DirArtifactType:     DirArtifactTypeName,
+	FileArtifactType:    FileArtifactTypeName,
+	SymlinkArtifactType: SymlinkArtifactTypeName,
+	UnknownArtifactType: UnknownArtifactTypeName,
 }
 
 // String converts the artifact type ID to a string
@@ -33,10 +42,10 @@ func (t ArtifactType) String() string {
 }
 
 var artifactTypeValues = map[string]ArtifactType{
-	"Dir":     DirArtifactType,
-	"File":    FileArtifactType,
-	"Symlink": SymlinkArtifactType,
-	"Unknown": UnknownArtifactType,
+	DirArtifactTypeName:     DirArtifactType,
+	FileArtifactTypeName:    FileArtifactType,
+	SymlinkArtifactTypeName: SymlinkArtifactType,
+	UnknownArtifactTypeName: UnknownArtifactType,
 }
 
 // GetArtifactTypeValue maps an artifact type name to an artifact type ID
@@ -176,11 +185,28 @@ type SystemReport struct {
 	Distro  DistroInfo `json:"distro"`
 }
 
+// SensorReport provides a basic sensor report for the container environment
+type SensorReport struct {
+	Version string   `json:"version"`
+	Args    []string `json:"args"`
+}
+
+// StartCommandReport provides a basic start command report for the container environment
+type StartCommandReport struct {
+	AppName       string   `json:"app_name"`
+	AppArgs       []string `json:"app_args,omitempty"`
+	AppEntrypoint []string `json:"app_entrypoint,omitempty"`
+	AppCmd        []string `json:"app_cmd,omitempty"`
+	AppUser       string   `json:"app_user,omitempty"`
+}
+
 // ContainerReport contains container report fields
 type ContainerReport struct {
-	System   SystemReport   `json:"system"`
-	Monitors MonitorReports `json:"monitors"`
-	Image    ImageReport    `json:"image"`
+	StartCommand *StartCommandReport `json:"start_command"`
+	Sensor       *SensorReport       `json:"sensor"`
+	System       SystemReport        `json:"system"`
+	Monitors     MonitorReports      `json:"monitors"`
+	Image        ImageReport         `json:"image"`
 }
 
 // PermSetFromFlags maps artifact flags to permissions

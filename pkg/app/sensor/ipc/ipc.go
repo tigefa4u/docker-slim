@@ -6,9 +6,9 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/docker-slim/docker-slim/pkg/ipc/channel"
-	"github.com/docker-slim/docker-slim/pkg/ipc/command"
-	"github.com/docker-slim/docker-slim/pkg/ipc/event"
+	"github.com/slimtoolkit/slim/pkg/ipc/channel"
+	"github.com/slimtoolkit/slim/pkg/ipc/command"
+	"github.com/slimtoolkit/slim/pkg/ipc/event"
 )
 
 type Server struct {
@@ -101,6 +101,9 @@ func (s *Server) Run() error {
 		return err
 	}
 
+	s.cmdChannel.WaitForConnection()
+	s.evtChannel.WaitForConnection()
+
 	go func() {
 		for {
 			log.Debug("sensor: ipc.Server.Run - waiting for done signal...")
@@ -118,6 +121,11 @@ func (s *Server) Run() error {
 
 func (s *Server) TryPublishEvt(evt *event.Message, retries uint) error {
 	log.Debugf("ipc.Server.TryPublishEvt(%+v)", evt)
+
+	if s.evtChannel == nil {
+		log.Warnf("ipc.Server.TryPublishEvt(): skipped - server has already been stopped")
+		return nil
+	}
 
 	data, err := json.Marshal(evt)
 	if err != nil {

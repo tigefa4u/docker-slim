@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/docker-slim/docker-slim/pkg/util/fsutil"
+	"github.com/slimtoolkit/slim/pkg/util/fsutil"
 )
 
 // Message errors
@@ -40,25 +40,37 @@ type Message interface {
 
 // StartMonitor contains the start monitor command fields
 type StartMonitor struct {
+	ObfuscateMetadata            bool                          `json:"obfuscate_metadata"`
 	RTASourcePT                  bool                          `json:"rta_source_ptrace"`
 	AppName                      string                        `json:"app_name"`
 	AppArgs                      []string                      `json:"app_args,omitempty"`
+	AppEntrypoint                []string                      `json:"app_entrypoint,omitempty"`
+	AppCmd                       []string                      `json:"app_cmd,omitempty"`
 	AppUser                      string                        `json:"app_user,omitempty"`
+	AppStdoutToFile              bool                          `json:"app_stdout_to_file"`
+	AppStderrToFile              bool                          `json:"app_stderr_to_file"`
 	RunTargetAsUser              bool                          `json:"run_tas_user,omitempty"`
+	ReportOnMainPidExit          bool                          `json:"report_on_main_pid_exit"`
 	KeepPerms                    bool                          `json:"keep_perms,omitempty"`
 	Perms                        map[string]*fsutil.AccessInfo `json:"perms,omitempty"`
 	Excludes                     []string                      `json:"excludes,omitempty"`
+	ExcludeVarLockFiles          bool                          `json:"exclude_varlock_files,omitempty"`
 	Preserves                    map[string]*fsutil.AccessInfo `json:"preserves,omitempty"`
 	Includes                     map[string]*fsutil.AccessInfo `json:"includes,omitempty"`
 	IncludeBins                  []string                      `json:"include_bins,omitempty"`
+	IncludeDirBinsList           map[string]*fsutil.AccessInfo `json:"include_dir_bins_list,omitempty"`
 	IncludeExes                  []string                      `json:"include_exes,omitempty"`
 	IncludeShell                 bool                          `json:"include_shell,omitempty"`
+	IncludeWorkdir               string                        `json:"include_workdir,omitempty"`
 	IncludeCertAll               bool                          `json:"include_cert_all,omitempty"`
 	IncludeCertBundles           bool                          `json:"include_cert_bundles,omitempty"`
 	IncludeCertDirs              bool                          `json:"include_cert_dirs,omitempty"`
 	IncludeCertPKAll             bool                          `json:"include_cert_pk_all,omitempty"`
 	IncludeCertPKDirs            bool                          `json:"include_cert_pk_dirs,omitempty"`
 	IncludeNew                   bool                          `json:"include_new,omitempty"`
+	IncludeSSHClient             bool                          `json:"include_ssh_client,omitempty"`
+	IncludeOSLibsNet             bool                          `json:"include_oslibs_net,omitempty"`
+	IncludeZoneInfo              bool                          `json:"include_zoneinfo,omitempty"`
 	IncludeAppNuxtDir            bool                          `json:"include_app_nuxt_dir,omitempty"`
 	IncludeAppNuxtBuildDir       bool                          `json:"include_app_nuxt_build,omitempty"`
 	IncludeAppNuxtDistDir        bool                          `json:"include_app_nuxt_dist,omitempty"`

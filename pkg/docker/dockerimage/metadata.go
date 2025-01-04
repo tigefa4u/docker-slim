@@ -1,61 +1,124 @@
 package dockerimage
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-func IsDeletedFileObject(path string) bool {
-	name := filepath.Base(path)
-	return strings.HasPrefix(name, WhiteoutPrefix)
+// pkg/system/architecture.go has architecture enums,
+// but the enums are not always identical
+const (
+	OSLinux   = "linux"
+	DefaultOS = OSLinux
+
+	ArchARM     = "arm"
+	ArchARM64   = "arm64"
+	ArchAMD64   = "amd64"
+	DefaultArch = ArchAMD64
+)
+
+func DefaultRuntimeArch() string {
+	return runtime.GOARCH
 }
 
-func NormalizeFileObjectLayerPath(path string) (string, bool, bool, error) {
-	isDeleted := false
-	name := filepath.Base(path)
-	if name == WhiteoutOpaqueDir {
-		//return a fake wildcard delete path for now (to make it easy to detect)
-		return filepath.Join(filepath.Dir(path), "*"), true, true, nil
-	}
+// focusing on the primary OS and architectures (ignoring the rest)
 
-	if strings.HasPrefix(name, WhiteoutPrefix) {
-		restored := name[len(WhiteoutPrefix):]
-		dir := filepath.Dir(path)
-		isDeleted = true
-		path = filepath.Join(dir, restored)
-	}
-
-	return path, isDeleted, false, nil
+var ArchVarMap = map[string][]string{
+	ArchARM:   {"", "v6", "v7", "v8"},
+	ArchARM64: {"", "v8"},
+	ArchAMD64: {""},
 }
 
-type ManifestObject struct {
-	Config   string   //"IMAGE_ID.json" (no sha256 prefix)
+func IsValidArchitecture(arch string, variant string) bool {
+	for varch, vvariants := range ArchVarMap {
+		if varch == arch {
+			for _, vvariant := range vvariants {
+				if vvariant == variant {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	return false
+}
+
+var OSArchMap = map[string][]string{
+	OSLinux: {
+		"386",
+		ArchAMD64,
+		ArchARM,
+		ArchARM64,
+		"ppc64",
+		"ppc64le",
+		"mips64",
+		"mips64le",
+		"s390x",
+		"riscv64"},
+}
+
+func IsValidPlatform(os string, arch string) bool {
+	for vos, varchs := range OSArchMap {
+		if vos == os {
+			for _, varch := range varchs {
+				if varch == arch {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	return false
+}
+
+// v1 and oci-based Manifest structure is the same* / compatible
+// but config and layer paths are different
+type DockerManifestObject struct {
+	// v1 format:  "IMAGE_ID.json" (no sha256 prefix in IMAGE_ID)
+	// oci format: "blobs/sha256/DIGEST_NO_PREFIX"
+	Config   string
 	RepoTags []string `json:",omitempty"` //["user/repo:tag"]
-	Layers   []string //"LAYER_ID/layer.tar"
+	// v1 format:  "LAYER_ID/layer.tar" (no sha256 prefix in LAYER_ID)
+	// oci format: "blobs/sha256/DIGEST" (no sha256 prefix in DIGEST)
+	Layers []string
+
+	// newer fields
+
+	Parent string `json:",omitempty"`
+	// DiffID map (where DiffID does have the "sha256:" prefix)
+	LayerSources map[string]BlobDescriptor `json:",omitempty"`
 }
 
-//consts from https://github.com/moby/moby/blob/master/pkg/archive/whiteouts.go
+// can reuse the 'Descriptor' for 'BlobDescriptor' from github.com/opencontainers/image-spec/specs-go/v1
 
-// WhiteoutPrefix prefix means file is a whiteout. If this is followed by a
-// filename this means that file has been removed from the base layer.
-const WhiteoutPrefix = ".wh."
+type BlobDescriptor struct {
+	MediaType string `json:"mediaType,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Digest    string `json:"digest,omitempty"`
 
-// WhiteoutMetaPrefix prefix means whiteout has a special meaning and is not
-// for removing an actual file. Normally these files are excluded from exported
-// archives.
-const WhiteoutMetaPrefix = WhiteoutPrefix + WhiteoutPrefix
+	// extra fields
+	Annotations map[string]string `json:"annotations,omitempty"`
+	URLs        []string          `json:"urls,omitempty"`
+	Platform    *Platform         `json:"platform,omitempty"`
+}
 
-// WhiteoutLinkDir is a directory AUFS uses for storing hardlink links to other
-// layers. Normally these should not go into exported archives and all changed
-// hardlinks should be copied to the top layer.
-const WhiteoutLinkDir = WhiteoutMetaPrefix + "plnk"
+// todo: can reuse 'Platform' from github.com/opencontainers/image-spec/specs-go/v1
 
-// WhiteoutOpaqueDir file means directory has been made opaque - meaning
-// readdir calls to this directory do not follow to lower layers.
-const WhiteoutOpaqueDir = WhiteoutMetaPrefix + ".opq"
+type Platform struct {
+	Architecture string   `json:"architecture"`
+	OS           string   `json:"os"`
+	OSVersion    string   `json:"os.version,omitempty"`
+	OSFeatures   []string `json:"os.features,omitempty"`
+	Variant      string   `json:"variant,omitempty"`
+}
 
-//data structures from https://github.com/moby/moby/blob/master/image
+// data structures from https://github.com/moby/moby/blob/master/image
 
 type V1ConfigObject struct {
 	// ID is a unique 64 character identifier of the image
@@ -93,6 +156,10 @@ type ConfigObject struct {
 	History    []XHistory `json:"history,omitempty"`
 	OSVersion  string     `json:"os.version,omitempty"`
 	OSFeatures []string   `json:"os.features,omitempty"`
+
+	//buildkit build info
+	BuildInfoRaw     string `json:"moby.buildkit.buildinfo.v1,omitempty"`
+	BuildInfoDecoded *BuildKitBuildInfo
 }
 
 //data structures from https://github.com/moby/moby/blob/master/image/rootfs.go
@@ -178,4 +245,99 @@ type HealthConfig struct {
 	// Retries is the number of consecutive failures needed to consider a container as unhealthy.
 	// Zero means inherit.
 	Retries int `json:",omitempty"`
+}
+
+//data structures from https://github.com/moby/buildkit/blob/master/util/buildinfo/types/types.go
+
+type BuildKitBuildInfo struct {
+	// Frontend defines the frontend used to build.
+	Frontend string `json:"frontend,omitempty"`
+	// Attrs defines build request attributes.
+	Attrs map[string]*string `json:"attrs,omitempty"`
+	// Sources defines build dependencies.
+	Sources []*BuildSource `json:"sources,omitempty"`
+	// Deps defines context dependencies.
+	Deps map[string]BuildKitBuildInfo `json:"deps,omitempty"`
+}
+
+type BuildSource struct {
+	// Type defines the SourceType source type (docker-image, git, http).
+	Type SourceType `json:"type,omitempty"`
+	// Ref is the reference of the source.
+	Ref string `json:"ref,omitempty"`
+	// Alias is a special field used to match with the actual source ref
+	// because frontend might have already transformed a string user typed
+	// before generating LLB.
+	Alias string `json:"alias,omitempty"`
+	// Pin is the source digest.
+	Pin string `json:"pin,omitempty"`
+}
+
+type SourceType string
+
+const (
+	SourceTypeDockerImage SourceType = "docker-image"
+	SourceTypeGit         SourceType = "git"
+	SourceTypeHTTP        SourceType = "http"
+)
+
+func buildInfoDecode(encoded string) (*BuildKitBuildInfo, error) {
+	if encoded == "" {
+		return nil, nil
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	var info BuildKitBuildInfo
+	if err = json.Unmarshal(raw, &info); err != nil {
+		return nil, err
+	}
+
+	return &info, nil
+}
+
+// consts from https://github.com/moby/moby/blob/master/pkg/archive/whiteouts.go
+
+// WhiteoutPrefix prefix means file is a whiteout. If this is followed by a
+// filename this means that file has been removed from the base layer.
+const WhiteoutPrefix = ".wh."
+
+// WhiteoutMetaPrefix prefix means whiteout has a special meaning and is not
+// for removing an actual file. Normally these files are excluded from exported
+// archives.
+const WhiteoutMetaPrefix = WhiteoutPrefix + WhiteoutPrefix
+
+// WhiteoutLinkDir is a directory AUFS uses for storing hardlink links to other
+// layers. Normally these should not go into exported archives and all changed
+// hardlinks should be copied to the top layer.
+const WhiteoutLinkDir = WhiteoutMetaPrefix + "plnk"
+
+// WhiteoutOpaqueDir file means directory has been made opaque - meaning
+// readdir calls to this directory do not follow to lower layers.
+const WhiteoutOpaqueDir = WhiteoutMetaPrefix + ".opq"
+
+func IsDeletedFileObject(path string) bool {
+	name := filepath.Base(path)
+	return strings.HasPrefix(name, WhiteoutPrefix)
+}
+
+func NormalizeFileObjectLayerPath(path string) (string, bool, bool, error) {
+	isDeleted := false
+	name := filepath.Base(path)
+	if name == WhiteoutOpaqueDir {
+		//return a fake wildcard delete path for now (to make it easy to detect)
+		return filepath.Join(filepath.Dir(path), "*"), true, true, nil
+	}
+
+	if strings.HasPrefix(name, WhiteoutPrefix) {
+		restored := name[len(WhiteoutPrefix):]
+		dir := filepath.Dir(path)
+		isDeleted = true
+		path = filepath.Join(dir, restored)
+	}
+
+	return path, isDeleted, false, nil
 }

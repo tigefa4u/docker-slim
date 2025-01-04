@@ -4,19 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/docker-slim/docker-slim/pkg/command"
-	"github.com/docker-slim/docker-slim/pkg/docker/dockerfile/reverse"
-	"github.com/docker-slim/docker-slim/pkg/docker/dockerimage"
-	"github.com/docker-slim/docker-slim/pkg/docker/linter/check"
-	"github.com/docker-slim/docker-slim/pkg/system"
-	"github.com/docker-slim/docker-slim/pkg/util/errutil"
-	"github.com/docker-slim/docker-slim/pkg/version"
+	"github.com/slimtoolkit/slim/pkg/command"
+	"github.com/slimtoolkit/slim/pkg/docker/dockerfile/reverse"
+	"github.com/slimtoolkit/slim/pkg/docker/dockerimage"
+	"github.com/slimtoolkit/slim/pkg/docker/linter/check"
+	"github.com/slimtoolkit/slim/pkg/system"
+	"github.com/slimtoolkit/slim/pkg/util/errutil"
+	"github.com/slimtoolkit/slim/pkg/version"
 )
 
 // DefaultFilename is the default name for the command report
@@ -73,6 +72,10 @@ type ImageMetadata struct {
 	Distro         *DistroInfo        `json:"distro,omitempty"`
 	Buildpack      *BuildpackInfo     `json:"buildpack,omitempty"`
 	ContainerEntry ContainerEntryInfo `json:"container_entry"`
+
+	//Base image info
+	BaseImageDigest string `json:"base_image_digest,omitempty"`
+	BaseImageName   string `json:"base_image_name,omitempty"`
 }
 
 type ContainerEntryInfo struct {
@@ -103,7 +106,7 @@ type SystemMetadata struct {
 }
 
 // Output Version for 'build'
-const OVBuildCommand = "1.0"
+const OVBuildCommand = "1.1"
 
 // BuildCommand is the 'build' command report data
 type BuildCommand struct {
@@ -114,6 +117,8 @@ type BuildCommand struct {
 	MinifiedImageSize      int64                `json:"minified_image_size"`
 	MinifiedImageSizeHuman string               `json:"minified_image_size_human"`
 	MinifiedImage          string               `json:"minified_image"`
+	MinifiedImageID        string               `json:"minified_image_id"`
+	MinifiedImageDigest    string               `json:"minified_image_digest"`
 	MinifiedImageHasData   bool                 `json:"minified_image_has_data"`
 	MinifiedBy             float64              `json:"minified_by"`
 	ArtifactLocation       string               `json:"artifact_location"`
@@ -121,6 +126,8 @@ type BuildCommand struct {
 	SeccompProfileName     string               `json:"seccomp_profile_name"`
 	AppArmorProfileName    string               `json:"apparmor_profile_name"`
 	ImageStack             []*reverse.ImageInfo `json:"image_stack"`
+	ImageCreated           bool                 `json:"image_created"`
+	ImageBuildEngine       string               `json:"image_build_engine"`
 }
 
 // Output Version for 'profile'
@@ -144,20 +151,20 @@ type ProfileCommand struct {
 }
 
 // Output Version for 'xray'
-const OVXrayCommand = "1.2"
+const OVXrayCommand = "1.2.3"
 
 // XrayCommand is the 'xray' command report data
 type XrayCommand struct {
 	Command
-	TargetReference      string                      `json:"target_reference"`
-	SourceImage          ImageMetadata               `json:"source_image"`
-	ArtifactLocation     string                      `json:"artifact_location"`
-	ImageReport          *dockerimage.ImageReport    `json:"image_report,omitempty"`
-	ImageStack           []*reverse.ImageInfo        `json:"image_stack"`
-	ImageLayers          []*dockerimage.LayerReport  `json:"image_layers"`
-	ImageArchiveLocation string                      `json:"image_archive_location"`
-	RawImageManifest     *dockerimage.ManifestObject `json:"raw_image_manifest,omitempty"`
-	RawImageConfig       *dockerimage.ConfigObject   `json:"raw_image_config,omitempty"`
+	TargetReference      string                            `json:"target_reference"`
+	SourceImage          ImageMetadata                     `json:"source_image"`
+	ArtifactLocation     string                            `json:"artifact_location"`
+	ImageReport          *dockerimage.ImageReport          `json:"image_report,omitempty"`
+	ImageStack           []*reverse.ImageInfo              `json:"image_stack"`
+	ImageLayers          []*dockerimage.LayerReport        `json:"image_layers"`
+	ImageArchiveLocation string                            `json:"image_archive_location"`
+	RawImageManifest     *dockerimage.DockerManifestObject `json:"raw_image_manifest,omitempty"`
+	RawImageConfig       *dockerimage.ConfigObject         `json:"raw_image_config,omitempty"`
 }
 
 // Output Version for 'lint'
@@ -176,6 +183,14 @@ type LintCommand struct {
 	Errors          map[string]error         `json:"errors,omitempty"` //map[CHECK_ID]ERROR_INFO
 }
 
+// Output Version for 'images'
+const OVImagesCommand = "1.0"
+
+// ImagesCommand is the 'images' command report data
+type ImagesCommand struct {
+	Command
+}
+
 // Output Version for 'containerize'
 const OVContainerizeCommand = "1.0"
 
@@ -190,6 +205,17 @@ const OVConvertCommand = "1.0"
 // ConvertCommand is the 'convert' command report data
 type ConvertCommand struct {
 	Command
+}
+
+// Output Version for 'merge'
+const OVMergeCommand = "1.0"
+
+// MergeCommand is the 'merge' command report data
+type MergeCommand struct {
+	Command
+	FirstImage           string `json:"first_image"`
+	LastImage            string `json:"last_image"`
+	UseLastImageMetadata bool   `json:"use_last_image_metadata"`
 }
 
 // Output Version for 'edit'
@@ -240,6 +266,15 @@ const OVRegistryCommand = "1.0"
 type RegistryCommand struct {
 	Command
 	TargetReference string `json:"target_reference"`
+}
+
+// Output Version for 'vulnerability'
+const OVVulnerabilityCommand = "1.0"
+
+// VulnerabilityCommand is the 'vulnerability' command report data
+type VulnerabilityCommand struct {
+	Command
+	Operation string `json:"operation"`
 }
 
 func (cmd *Command) init(containerized bool) {
@@ -314,6 +349,21 @@ func NewLintCommand(reportLocation string, containerized bool) *LintCommand {
 	return cmd
 }
 
+// NewImagesCommand creates a new 'images' command report
+func NewImagesCommand(reportLocation string, containerized bool) *ImagesCommand {
+	cmd := &ImagesCommand{
+		Command: Command{
+			reportLocation: reportLocation,
+			Version:        OVImagesCommand, //images command 'results' version (report and artifacts)
+			Type:           command.Images,
+			State:          command.StateUnknown,
+		},
+	}
+
+	cmd.Command.init(containerized)
+	return cmd
+}
+
 // NewContainerizeCommand creates a new 'containerize' command report
 func NewContainerizeCommand(reportLocation string, containerized bool) *ContainerizeCommand {
 	cmd := &ContainerizeCommand{
@@ -336,6 +386,21 @@ func NewConvertCommand(reportLocation string, containerized bool) *ConvertComman
 			reportLocation: reportLocation,
 			Version:        OVConvertCommand, //convert command 'results' version (report and artifacts)
 			Type:           command.Convert,
+			State:          command.StateUnknown,
+		},
+	}
+
+	cmd.Command.init(containerized)
+	return cmd
+}
+
+// NewMergeCommand creates a new 'edit' command report
+func NewMergeCommand(reportLocation string, containerized bool) *MergeCommand {
+	cmd := &MergeCommand{
+		Command: Command{
+			reportLocation: reportLocation,
+			Version:        OVMergeCommand, //edit command 'results' version (report and artifacts)
+			Type:           command.Merge,
 			State:          command.StateUnknown,
 		},
 	}
@@ -434,6 +499,21 @@ func NewRegistryCommand(reportLocation string, containerized bool) *RegistryComm
 	return cmd
 }
 
+// NewVulnerabilityCommand creates a new 'registry' command report
+func NewVulnerabilityCommand(reportLocation string, containerized bool) *VulnerabilityCommand {
+	cmd := &VulnerabilityCommand{
+		Command: Command{
+			reportLocation: reportLocation,
+			Version:        OVVulnerabilityCommand,
+			Type:           command.Vulnerability,
+			State:          command.StateUnknown,
+		},
+	}
+
+	cmd.Command.init(containerized)
+	return cmd
+}
+
 func (p *Command) ReportLocation() string {
 	return p.reportLocation
 }
@@ -464,12 +544,12 @@ func (p *Command) saveInfo(info interface{}) bool {
 		err := encoder.Encode(info)
 		errutil.FailOn(err)
 
-		err = ioutil.WriteFile(p.reportLocation, reportData.Bytes(), 0644)
+		err = os.WriteFile(p.reportLocation, reportData.Bytes(), 0644)
 		if err != nil && os.IsPermission(err) {
 			if pinfo, tmpErr := os.Stat(tmpPath); tmpErr == nil && pinfo.IsDir() {
 				p.reportLocation = filepath.Join(tmpPath, DefaultFilename)
 				log.Debugf("report.saveInfo - overriding command report file path to %v", p.reportLocation)
-				err = ioutil.WriteFile(p.reportLocation, reportData.Bytes(), 0644)
+				err = os.WriteFile(p.reportLocation, reportData.Bytes(), 0644)
 			} else {
 				fmt.Printf("report.Command.saveInfo: not saving report file - '%s'\n", p.reportLocation)
 				return false

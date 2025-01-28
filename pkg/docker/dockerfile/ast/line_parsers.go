@@ -16,7 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/docker-slim/docker-slim/pkg/docker/instruction"
+	"github.com/slimtoolkit/slim/pkg/docker/instruction"
 )
 
 type NameValError struct {
@@ -63,7 +63,6 @@ func parseIgnore(rest string, d *Directive) (*Node, map[string]bool, error) {
 // statement with sub-statements.
 //
 // ONBUILD RUN foo bar -> (onbuild (run foo bar))
-//
 func parseSubCommand(rest string, d *Directive) (*Node, map[string]bool, error) {
 	if rest == "" {
 		return nil, nil, nil

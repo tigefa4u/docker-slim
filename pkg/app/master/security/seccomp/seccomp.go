@@ -3,13 +3,12 @@ package seccomp
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
-	"github.com/docker-slim/docker-slim/pkg/report"
-	"github.com/docker-slim/docker-slim/pkg/system"
-	"github.com/docker-slim/docker-slim/pkg/third_party/opencontainers/specs"
+	"github.com/slimtoolkit/slim/pkg/report"
+	"github.com/slimtoolkit/slim/pkg/system"
+	"github.com/slimtoolkit/slim/pkg/third_party/opencontainers/specs"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -123,7 +122,7 @@ func GenProfile(artifactLocation string, profileName string) error {
 		return err
 	}
 
-	err = ioutil.WriteFile(profilePath, profileData, 0644)
+	err = os.WriteFile(profilePath, profileData, 0644)
 	if err != nil {
 		return err
 	}

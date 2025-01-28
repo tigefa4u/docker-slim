@@ -1,6 +1,8 @@
 .DS_Store
 /docker-slim
+/slim
 /docker-slim-sensor
+/slim-sensor
 /dist_linux*/
 /dist_mac/
 /dist_mac_m1/
@@ -9,5 +11,8 @@
 slim.report.json
 dist_linux*.tar.gz
 dist_mac.zip
+dist_mac_m1.zip
 .idea
 *.swp
+*.swo
+slim.report.json

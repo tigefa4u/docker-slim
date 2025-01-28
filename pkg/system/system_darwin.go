@@ -61,9 +61,9 @@ func osName(major, minor uint64) string {
 	return "other"
 }
 
-//Mac OS X version names and numbers:
-//https://support.apple.com/en-us/HT201260
-//https://en.wikipedia.org/wiki/MacOS_version_history
+// Mac OS X version names and numbers:
+// https://support.apple.com/en-us/HT201260
+// https://en.wikipedia.org/wiki/MacOS_version_history
 var osNames = map[uint64]struct {
 	name, numPrefix string
 }{
@@ -84,4 +84,7 @@ var osNames = map[uint64]struct {
 	18: {"Mojave", "10.14."},
 	19: {"Catalina", "10.15."},
 	20: {"Big Sur", "11."},
+	21: {"Monterey", "12."},
+	22: {"Ventura", "13."},
+	23: {"Sonoma", "14."},
 }

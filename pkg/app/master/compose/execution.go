@@ -6,15 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/docker-slim/docker-slim/pkg/app"
-	"github.com/docker-slim/docker-slim/pkg/docker/dockerutil"
+	"github.com/slimtoolkit/slim/pkg/app"
+	"github.com/slimtoolkit/slim/pkg/docker/dockerutil"
 
 	"github.com/compose-spec/compose-go/loader"
 	"github.com/compose-spec/compose-go/types"
@@ -215,7 +214,7 @@ func NewConfigInfo(
 			cv.BaseComposeDir = workingDir
 		}
 
-		b, err := ioutil.ReadFile(fullComposeFilePath)
+		b, err := os.ReadFile(fullComposeFilePath)
 		if err != nil {
 			return nil, err
 		}
@@ -817,7 +816,7 @@ func (ref *Execution) CleanupServices() error {
 }
 
 func (ref *Execution) StopService(key string) error {
-	ref.logger.Debug("Execution.StopService(%s)\n", key)
+	ref.logger.Debugf("Execution.StopService(%s)\n", key)
 	service, running := ref.RunningServices[key]
 	if !running {
 		ref.logger.Debugf("Execution.StopService(%s) - no running service", key)
@@ -979,9 +978,9 @@ func EnvVarsFromService(varMap types.MappingWithEquals, varFiles types.StringLis
 	}
 
 	for _, file := range varFiles {
-		data, err := ioutil.ReadFile(file)
+		data, err := os.ReadFile(file)
 		if err != nil {
-			log.Debugf("compose.EnvVarsFromService: error reading '%s' - %v", err)
+			log.Debugf("compose.EnvVarsFromService: error reading '%s' - %v", file, err)
 			continue
 		}
 
@@ -1130,7 +1129,7 @@ func pullImage(ctx context.Context, apiClient *dockerapi.Client, imageRef string
 	return nil
 }
 
-//TODO: move builder into pkg
+// TODO: move builder into pkg
 func buildImage(ctx context.Context, apiClient *dockerapi.Client, basePath, imageName string, config *types.BuildConfig) error {
 	log.Debugf("buildImage(%s,%s)", basePath, imageName)
 

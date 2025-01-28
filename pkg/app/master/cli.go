@@ -8,63 +8,72 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 
-	"github.com/docker-slim/docker-slim/pkg/app"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/build"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/containerize"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/convert"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/debug"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/dockerclipm"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/edit"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/help"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/install"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/lint"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/probe"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/profile"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/registry"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/run"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/server"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/update"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/version"
-	"github.com/docker-slim/docker-slim/pkg/app/master/commands/xray"
-	"github.com/docker-slim/docker-slim/pkg/app/master/config"
-	"github.com/docker-slim/docker-slim/pkg/system"
-	"github.com/docker-slim/docker-slim/pkg/util/fsutil"
-	v "github.com/docker-slim/docker-slim/pkg/version"
+	"github.com/slimtoolkit/slim/pkg/app"
+	"github.com/slimtoolkit/slim/pkg/app/master/command"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/appbom"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/build"
+	//"github.com/slimtoolkit/slim/pkg/app/master/command/containerize"
+	//"github.com/slimtoolkit/slim/pkg/app/master/command/convert"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/debug"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/dockerclipm"
+	//"github.com/slimtoolkit/slim/pkg/app/master/command/edit"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/help"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/images"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/install"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/lint"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/merge"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/probe"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/profile"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/registry"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/run"
+	//"github.com/slimtoolkit/slim/pkg/app/master/command/server"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/update"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/version"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/vulnerability"
+	"github.com/slimtoolkit/slim/pkg/app/master/command/xray"
+	"github.com/slimtoolkit/slim/pkg/app/master/config"
+	"github.com/slimtoolkit/slim/pkg/system"
+	"github.com/slimtoolkit/slim/pkg/util/fsutil"
+	v "github.com/slimtoolkit/slim/pkg/version"
 )
 
-// DockerSlim app CLI constants
+// Main/driver app CLI constants
 const (
-	AppName  = "docker-slim"
-	AppUsage = "optimize and secure your Docker containers!"
+	AppName  = "slim"
+	AppUsage = "inspect, optimize and debug your containers!"
 )
 
 func registerCommands() {
 	//registering commands explicitly instead of relying on init()
 	//also get to control the order of the commands in the interactive prompt
 
+	debug.RegisterCommand()
+	build.RegisterCommand()
 	xray.RegisterCommand()
 	lint.RegisterCommand()
-	build.RegisterCommand()
+	merge.RegisterCommand()
+	images.RegisterCommand()
 	registry.RegisterCommand()
+	vulnerability.RegisterCommand()
 	profile.RegisterCommand()
 	version.RegisterCommand()
+	appbom.RegisterCommand()
 	help.RegisterCommand()
 	update.RegisterCommand()
 	install.RegisterCommand()
-	edit.RegisterCommand()
+	//edit.RegisterCommand() - not doing anything yet
 	probe.RegisterCommand()
-	convert.RegisterCommand()
+	//convert.RegisterCommand() - not doing anything yet
 	run.RegisterCommand()
-	server.RegisterCommand()
-	debug.RegisterCommand()
-	containerize.RegisterCommand()
+	//server.RegisterCommand() - not doing anything yet
+	//containerize.RegisterCommand() - not doing anything yet
 	dockerclipm.RegisterCommand()
 }
 
 func newCLI() *cli.App {
 	registerCommands()
 
+	doShowCommunityInfo := true
 	cliApp := cli.NewApp()
 	cliApp.Version = v.Current()
 	cliApp.Name = AppName
@@ -74,14 +83,10 @@ func newCLI() *cli.App {
 		cli.ShowAppHelp(ctx)
 	}
 
-	cliApp.Flags = commands.GlobalFlags()
+	cliApp.Flags = command.GlobalFlags()
 
 	cliApp.Before = func(ctx *cli.Context) error {
-		gparams, err := commands.GlobalFlagValues(ctx)
-		if err != nil {
-			log.Errorf("commands.GlobalFlagValues error - %v", err)
-			return err
-		}
+		gparams := command.GlobalFlagValues(ctx)
 
 		appParams, err := config.NewAppOptionsFromFile(fsutil.ResolveImageStateBasePath(gparams.StatePath))
 		if err != nil {
@@ -89,10 +94,10 @@ func newCLI() *cli.App {
 			return err
 		}
 
-		gparams = commands.UpdateGlobalFlagValues(appParams, gparams)
+		gparams = command.UpdateGlobalFlagValues(appParams, gparams)
 
-		ctx.Context = commands.CLIContextSave(ctx.Context, commands.GlobalParams, gparams)
-		ctx.Context = commands.CLIContextSave(ctx.Context, commands.AppParams, appParams)
+		ctx.Context = command.CLIContextSave(ctx.Context, command.GlobalParams, gparams)
+		ctx.Context = command.CLIContextSave(ctx.Context, command.AppParams, appParams)
 
 		if gparams.NoColor {
 			app.NoColor()
@@ -147,32 +152,42 @@ func newCLI() *cli.App {
 
 		log.Debugf("sysinfo => %#v", system.GetSystemInfo())
 
+		//NOTE: not displaying the community info here to reduce noise
 		//tmp hack
-		if !strings.Contains(strings.Join(os.Args, " "), " docker-cli-plugin-metadata") {
-			app.ShowCommunityInfo()
-		}
+		//if !strings.Contains(strings.Join(os.Args, " "), " docker-cli-plugin-metadata") {
+		//   app.ShowCommunityInfo(gparams.OutputFormat)
+		//}
 		return nil
 	}
 
 	cliApp.After = func(ctx *cli.Context) error {
+		//todo: get already fetched gcvalues from ctx.Context
+		gcvalues := command.GlobalFlagValues(ctx)
+
+		if gcvalues.QuietCLIMode {
+			return nil
+		}
+
 		//tmp hack
 		if !strings.Contains(strings.Join(os.Args, " "), " docker-cli-plugin-metadata") {
-			app.ShowCommunityInfo()
+			if doShowCommunityInfo {
+				app.ShowCommunityInfo(ctx.String(command.FlagOutputFormat))
+			}
 		}
 		return nil
 	}
 
 	cliApp.Action = func(ctx *cli.Context) error {
-		gcvalues, err := commands.GlobalFlagValues(ctx)
-		if err != nil {
-			return err
-		}
+		//todo: get already fetched gcvalues from ctx.Context
+		gcvalues := command.GlobalFlagValues(ctx)
 
-		ia := commands.NewInteractiveApp(cliApp, gcvalues)
+		//disable community info in interactive mode (too noisy)
+		doShowCommunityInfo = false
+		ia := command.NewInteractiveApp(cliApp, gcvalues)
 		ia.Run()
 		return nil
 	}
 
-	cliApp.Commands = commands.CLI
+	cliApp.Commands = command.GetCommands()
 	return cliApp
 }

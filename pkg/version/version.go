@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/docker-slim/docker-slim/pkg/consts"
+	"github.com/slimtoolkit/slim/pkg/consts"
 )
 
 var (
@@ -15,7 +15,13 @@ var (
 )
 
 func init() {
-	currentVersion = fmt.Sprintf("%v|%v|%v|%v|%v", runtime.GOOS, consts.AppVersionName, appVersionTag, appVersionRev, appVersionTime)
+	currentVersion = fmt.Sprintf("%s/%s|%s|%s|%s|%s",
+		runtime.GOOS,
+		runtime.GOARCH,
+		consts.AppVersionName,
+		appVersionTag,
+		appVersionRev,
+		appVersionTime)
 }
 
 // Current returns the current version information

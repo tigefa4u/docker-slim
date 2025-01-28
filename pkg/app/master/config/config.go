@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,7 +9,7 @@ import (
 
 	docker "github.com/fsouza/go-dockerclient"
 
-	"github.com/docker-slim/docker-slim/pkg/util/fsutil"
+	"github.com/slimtoolkit/slim/pkg/util/fsutil"
 )
 
 // AppOptionsFilename is the default name for the app configs
@@ -26,12 +27,15 @@ type GlobalAppOptions struct {
 	NoColor      *bool   `json:"no_color,omitempty"`
 	Debug        *bool   `json:"debug,omitempty"`
 	Verbose      *bool   `json:"verbose,omitempty"`
+	Quiet        *bool   `json:"quiet,omitempty"`
+	OutputFormat *string `json:"output_format,omitempty"`
 	LogLevel     *string `json:"log_level,omitempty"`
 	Log          *string `json:"log,omitempty"`
 	LogFormat    *string `json:"log_format,omitempty"`
 	UseTLS       *bool   `json:"tls,omitempty"`
 	VerifyTLS    *bool   `json:"tls_verify,omitempty"`
 	TLSCertPath  *string `json:"tls_cert_path,omitempty"`
+	APIVersion   *string `json:"api_version,omitempty"`
 	Host         *string `json:"host,omitempty"`
 	ArchiveState *string `json:"archive_state,omitempty"`
 }
@@ -205,6 +209,7 @@ type DockerClient struct {
 	VerifyTLS   bool
 	TLSCertPath string
 	Host        string
+	APIVersion  string
 	Env         map[string]string
 }
 
@@ -215,6 +220,8 @@ const (
 	CAMTimeout        = "timeout"
 	CAMSignal         = "signal"
 	CAMExec           = "exec"
+	CAMHostExec       = "host-exec"
+	CAMAppExit        = "app-exit"
 )
 
 // ContinueAfter provides the command execution mode parameters
@@ -222,4 +229,73 @@ type ContinueAfter struct {
 	Mode         string
 	Timeout      time.Duration
 	ContinueChan <-chan struct{}
+}
+
+type HTTPProbeOptions struct {
+	Do            bool
+	Full          bool
+	ExitOnFailure bool
+
+	Cmds  []HTTPProbeCmd
+	Ports []uint16
+
+	StartWait  int
+	RetryCount int
+	RetryWait  int
+
+	CrawlMaxDepth       int
+	CrawlMaxPageCount   int
+	CrawlConcurrency    int
+	CrawlConcurrencyMax int
+
+	APISpecs     []string
+	APISpecFiles []string
+
+	ProxyEndpoint string
+	ProxyPort     int
+}
+
+type AppNodejsInspectOptions struct {
+	IncludePackages []string
+	NextOpts        NodejsWebFrameworkInspectOptions
+	NuxtOpts        NodejsWebFrameworkInspectOptions
+}
+
+type NodejsWebFrameworkInspectOptions struct {
+	IncludeAppDir         bool
+	IncludeBuildDir       bool
+	IncludeDistDir        bool
+	IncludeStaticDir      bool
+	IncludeNodeModulesDir bool
+}
+
+type KubernetesOptions struct {
+	Target         KubernetesTarget
+	TargetOverride KubernetesTargetOverride
+
+	Manifests  []string
+	Kubeconfig string
+}
+
+type KubernetesTarget struct {
+	Workload  string
+	Namespace string
+	Container string
+}
+
+func (t *KubernetesTarget) WorkloadName() (string, error) {
+	parts := strings.Split(t.Workload, "/")
+	if len(parts) != 2 || len(parts[1]) == 0 {
+		return "", errors.New("malformed Kubernetes workload name")
+	}
+
+	return parts[1], nil
+}
+
+type KubernetesTargetOverride struct {
+	Image string
+}
+
+func (ko KubernetesOptions) HasTargetSet() bool {
+	return ko.Target.Workload != ""
 }

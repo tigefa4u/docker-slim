@@ -3,11 +3,10 @@ package system
 import (
 	"bufio"
 	"bytes"
-	"io/ioutil"
 	"os"
 	"strings"
 
-	"github.com/docker-slim/docker-slim/pkg/util/fsutil"
+	"github.com/slimtoolkit/slim/pkg/util/fsutil"
 )
 
 const (
@@ -227,7 +226,7 @@ func NewOSShellsFromData(raw []byte) ([]*OSShell, error) {
 }
 
 func NewOSShells(verify bool) ([]*OSShell, error) {
-	raw, err := ioutil.ReadFile(OSShellsFile)
+	raw, err := os.ReadFile(OSShellsFile)
 	if err == nil {
 		return nil, err
 	}

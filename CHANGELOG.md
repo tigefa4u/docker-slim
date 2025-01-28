@@ -1,5 +1,194 @@
 # Releases
 
+## 1.40.11 (2/2/2024)
+
+### New Features
+
+- New `build` command flags (`--include-dir-bins` and `--include-ssh-client`).
+- Simple `images` command to list container images.
+
+### Improvements
+
+- OCI image format support in `xray`.
+- Improved `xray` command reports to include object type information.
+
+### Bug Fixes
+
+- Fixes and dependency updates to support the new Docker Engine version (25.x).
+
+
+## 1.40.10 (1/17/2024)
+
+### Bug Fixes
+
+- Sensor artifact (post-)processing bug fix for additional PT generated artifacts.
+
+
+## 1.40.9 (1/15/2024)
+
+### Improvements
+
+- Added command parameter information to process events in `mondel`.
+- Enhanced `mondel` event capture to prevent event data loss on sensor shutdown.
+
+
+## 1.40.8 (1/7/2024)
+
+### New Features
+
+- New `vulnerability` command and the `epss` subcommand to lookup EPSS scores for vulnerabilities.
+- Simple `registry server` command to have a local OCI registry (thank you Sarvesh Raj, @sarveshraj, for your contribution!).
+- Simple `registry push` command to push local images to a registry.
+- Simple `images` command to list container images.
+- RPM packaging for the apps (thank you Rohan Jamadagni, @Rohansjamadagni, for your contribution!)
+
+### Improvements
+
+- Enhanced `registry pull` command to pull images from authenticated registries.
+- `quiet` mode improvements (WIP) to hide the standard execution context output when it's enabled.
+- `quiet` mode for the `images` command.
+- Interactive prompt updates to include the `images`, `registry` and `vulnerability` commands and a couple of global flags.
+- Monitor Data Event Log (mondel) enhancement to improve the write path.
+
+
+## 1.40.7 (12/9/2023)
+
+### New Features
+
+- Simple `registry image-index-create` command to create multi-architecture images.
+- Simple `images` command to list container images.
+
+### Improvements
+
+- Improved ptmon syscall handling.
+- Enhanced `mondel` events with timestamps and sequence numbers.
+- Extra docker socket validation checks.
+- Version info on exit/failure.
+- Temp container cleanup improvements.
+- ARM image build scripts for the containerized distribution.
+
+### Bug Fixes
+
+- Websocket http probe bug fix.
+- Various ptmod bug fixes.
+
+
+## 1.40.5/1.40.6 (11/2/2023)
+
+### New Features
+
+- Sensor `control` commands to control sensor execution when running in the standalone mode (first command: `stop-target-app`).
+- `xray` - detect system identities (users, groups) and their properties (`--detect-identities` flag, enabled by default).
+- `build` - Keep the OS/libc zoneinfo data (`--include-zoneinfo` flag, disabled by default).
+- `build`/`profile` - Mon(itor) Data Event Log (aka `mondel`) - optional data event log for sensor monitors to log/stream monitor events (`--enable-mondel` main app flag, `--mondel`/`-n` sensor flag(s)).
+
+### Improvements
+
+- `target-app-running` sensor lifecycle hook.
+- `build`/`profile`: `--env-file` to load env vars from a file.
+- `build`/`profile`: basic input validation to ignore malformed env var data for the `--env` flag.
+- `build`: Using internal output image builder by default (`--image-build-engine` flag)
+- Renamed the reverse engineered Dockerfile from `Dockerfile.fat` 
+to `Dockerfile.reversed`
+
+### Bug Fixes
+
+- Various bug fixes
+
+
+## 1.40.4 (8/25/2023)
+
+### Improvements
+
+- Auto-complete in the interactive `prompt` mode for the target, namespace, pod and session flags
+- Interactive `debug` command terminal that runs as if you are connected directly to the target image you are debugging (enabled by default)
+- Basic sessions for `debug` command
+- Ability to show logs for the existing `debug` command sessions
+- More `debug` command flags (see README)
+- README docs updates for the `debug` command
+
+### Bug Fixes
+
+- Many `debug` command bug fixes
+
+## 1.40.3 (7/13/2023)
+
+### New Features
+
+- Kubernetes runtime support for the `debug` command
+- `appbom` command in the main app and `--appbom` flag in the sensor
+- `merge` command to merge two container images (optimized to merge two minified images).
+
+### Improvements
+
+- More `debug` command flags
+- README docs for the `debug` command
+- Ability to detect the Docker Desktop unix socket
+- Code and logging cleanup
+
+### Bug Fixes
+
+- Sensor volume fix for sensor symlinks (to address the Homebrew installed problems with sensor)
+- Various dependency updates to get security fixes
+
+## 1.40.2 (5/12/2023)
+
+### Improvements
+
+- New experimental `build` command flag to prevent the vulnerability scanners from discovering the metadata they need to identify the vulnerabilities (`--obfuscate-metadata`) inspired by the [`Malicious Compliance`](https://kccnceu2023.sched.com/event/1Hybu/malicious-compliance-reflections-on-trusting-container-scanners-ian-coldwater-independent-duffie-cooley-isovalent-brad-geesaman-ghost-security-rory-mccune-datadog) KubeCon EU 2023 talk
+
+### Bug Fixes
+
+- HEALTHCHECK instruction decoding enhancements to handle the data generated by buildah
+- fsutil format string bug fix
+
+## 1.40.1 (4/5/2023)
+
+### Improvements
+
+- New include flags for the `build` command (`--include-workdir`)
+- Debug/trace logging improvements
+
+### Bug Fixes
+
+- todo: add info
+
+## 1.40.0 (1/15/2023)
+
+### New Features
+
+- Base image metadata for xray
+- Basic support for multiple image build engines (`--image-build-engine`, `--image-build-arch` parameters)
+
+### Improvements
+
+- dockerfile reverse engineering updates
+- buildkit dockerfile instruction support
+- name change
+
+### Bug Fixes
+
+- todo: add info
+
+## 1.39.1 (11/12/2022)
+
+## 1.39.0 (10/24/2022)
+
+## 1.38.0 (8/27/2022)
+
+### New Features
+
+- Experimental 'debug' command
+- JSON console output format
+
+### Improvements
+
+- refactored http-probe-exec and http-probe-exec-file to be host-exec and host-exec-file (breaking change)
+
+### Bug Fixes
+
+- todo: add info
+
 ## 1.37.6 (4/22/2022)
 
 ### Improvements

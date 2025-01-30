@@ -5,18 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"time"
 
-	"github.com/fsouza/go-dockerclient"
+	docker "github.com/fsouza/go-dockerclient"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/docker-slim/docker-slim/pkg/app"
-	//"github.com/docker-slim/docker-slim/pkg/app/master/commands"
-	"github.com/docker-slim/docker-slim/pkg/system"
-	"github.com/docker-slim/docker-slim/pkg/util/fsutil"
-	v "github.com/docker-slim/docker-slim/pkg/version"
+	"github.com/slimtoolkit/slim/pkg/app"
+	//"github.com/slimtoolkit/slim/pkg/app/master/commands"
+	"github.com/slimtoolkit/slim/pkg/system"
+	"github.com/slimtoolkit/slim/pkg/util/fsutil"
+	v "github.com/slimtoolkit/slim/pkg/version"
 )
 
 const (
@@ -25,6 +24,7 @@ const (
 	versionAuthKey       = "1JZg1RXvS6mZ0ANgf7p9PoYWQ9q.1JZg3zytWMmBVH50c0RvtBvVpq8"
 )
 
+type ovars = app.OutVars
 type CheckVersionRequest struct {
 	AppVersion string `json:"app_version"`
 }
@@ -41,7 +41,7 @@ func PrintCheckVersion(
 	printPrefix string,
 	info *CheckVersionInfo) {
 	if info != nil && info.Status == "success" && info.Outdated {
-		msg := "Your version of DockerSlim is out of date! Use the \"update\" command or download the new version from https://dockersl.im/downloads.html"
+		msg := "Your version of SlimToolkit is out of date! Use `slim update` to get the latest version."
 		if xc == nil {
 			fmt.Printf("%s info=version status=OUTDATED local=%s current=%s\n", printPrefix, v.Tag(), info.Current)
 			fmt.Printf("%s info=message message='%s'\n", printPrefix, msg)
@@ -71,63 +71,90 @@ func GetCheckVersionVerdict(info *CheckVersionInfo) string {
 }
 
 // Print shows the master app version information
-func Print(printPrefix string, logger *log.Entry, client *docker.Client, checkVersion, inContainer, isDSImage bool) {
-	fmt.Printf("%s info=app version='%s' container=%v dsimage=%v\n", printPrefix, v.Current(), inContainer, isDSImage)
-	if checkVersion {
-		vinfo := Check(inContainer, isDSImage)
-		outdated := "unknown"
-		current := "unknown"
-		if vinfo != nil && vinfo.Status == "success" {
-			outdated = fmt.Sprintf("%v", vinfo.Outdated)
-			current = vinfo.Current
-		}
-		fmt.Printf("%s info=app outdated=%v current=%v verdict='%v'\n",
-			printPrefix, outdated, current, GetCheckVersionVerdict(vinfo))
+func Print(xc *app.ExecutionContext, cmdNameParam string, logger *log.Entry, client *docker.Client, checkVersion, inContainer, isDSImage bool) {
+
+	ovApp := ovars{
+		"cmd":       cmdNameParam,
+		"version":   v.Current(),
+		"container": inContainer,
+		"dsimage":   isDSImage,
+		"location":  fsutil.ExeDir(),
 	}
 
-	fmt.Printf("%s info=app location='%v'\n", printPrefix, fsutil.ExeDir())
+	if checkVersion {
+		vinfo := Check(inContainer, isDSImage)
+		current := "unknown"
+		if vinfo != nil && vinfo.Status == "success" {
+			if vinfo.Outdated {
+				ovApp["status"] = "OUTDATED"
+			}
+			current = vinfo.Current
+		}
+
+		ovApp["current"] = current
+		ovApp["verdict"] = GetCheckVersionVerdict(vinfo)
+	}
+	xc.Out.Info("app", ovApp)
 
 	hostInfo := system.GetSystemInfo()
-	fmt.Printf("%s info=host osname='%v'\n", printPrefix, hostInfo.Distro.DisplayName)
-	fmt.Printf("%s info=host osbuild=%v\n", printPrefix, hostInfo.OsBuild)
-	fmt.Printf("%s info=host version='%v'\n", printPrefix, hostInfo.Version)
-	fmt.Printf("%s info=host release=%v\n", printPrefix, hostInfo.Release)
-	fmt.Printf("%s info=host sysname=%v\n", printPrefix, hostInfo.Sysname)
+	ovHost := ovars{
+		"cmd":     cmdNameParam,
+		"osname":  hostInfo.Distro.DisplayName,
+		"osbuild": hostInfo.OsBuild,
+		"version": hostInfo.Version,
+		"release": hostInfo.Release,
+		"sysname": hostInfo.Sysname,
+	}
+	xc.Out.Info("host", ovHost)
 
 	if client != nil {
 		info, err := client.Info()
 		if err != nil {
-			fmt.Printf("%s error='error getting docker info'\n", printPrefix)
-			logger.Debugf("Error getting docker info => %v", err)
-			return
+			xc.Out.Error("error getting docker info", err.Error())
+			xc.Out.State("exited",
+				ovars{
+					"exit.code": -1,
+				})
+			xc.Exit(-1)
 		}
 
-		fmt.Printf("%s info=docker name=%v\n", printPrefix, info.Name)
-		fmt.Printf("%s info=docker kernel_version=%v\n", printPrefix, info.KernelVersion)
-		fmt.Printf("%s info=docker operating_system=%v\n", printPrefix, info.OperatingSystem)
-		fmt.Printf("%s info=docker ostype=%v\n", printPrefix, info.OSType)
-		fmt.Printf("%s info=docker server_version=%v\n", printPrefix, info.ServerVersion)
-		fmt.Printf("%s info=docker architecture=%v\n", printPrefix, info.Architecture)
+		ovDocker := ovars{
+			"cmd":              cmdNameParam,
+			"name":             info.Name,
+			"kernel.version":   info.KernelVersion,
+			"operating.system": info.OperatingSystem,
+			"ostype":           info.OSType,
+			"server.version":   info.ServerVersion,
+			"architecture":     info.Architecture,
+		}
+		xc.Out.Info("docker", ovDocker)
 
 		ver, err := client.Version()
 		if err != nil {
-			fmt.Printf("%s error='error getting docker client version'\n", printPrefix)
-			logger.Debugf("Error getting docker client version => %v", err)
-			return
+			xc.Out.Error("error getting docker client version", err.Error())
+			xc.Out.State("exited",
+				ovars{
+					"exit.code": -1,
+				})
+			xc.Exit(-1)
 		}
-
-		fmt.Printf("%s info=dclient api_version=%v\n", printPrefix, ver.Get("ApiVersion"))
-		fmt.Printf("%s info=dclient min_api_version=%v\n", printPrefix, ver.Get("MinAPIVersion"))
-		fmt.Printf("%s info=dclient build_time=%v\n", printPrefix, ver.Get("BuildTime"))
-		fmt.Printf("%s info=dclient git_commit=%v\n", printPrefix, ver.Get("GitCommit"))
+		ovDockerClient := ovars{
+			"cmd":             cmdNameParam,
+			"api.version":     ver.Get("ApiVersion"),
+			"min.api.version": ver.Get("MinAPIVersion"),
+			"build.time":      ver.Get("BuildTime"),
+			"git.commit":      ver.Get("GitCommit"),
+		}
+		xc.Out.Info("dclient", ovDockerClient)
 	} else {
-		fmt.Printf("%s info=no.docker.client\n", printPrefix)
+		xc.Out.Info("no.docker.client", ovars{})
 	}
+
 }
 
 // Check checks the app version
 func Check(inContainer, isDSImage bool) *CheckVersionInfo {
-	logger := log.WithFields(log.Fields{"app": "docker-slim"})
+	logger := log.WithFields(log.Fields{"app": "slim"})
 
 	client := http.Client{
 		Timeout: 13 * time.Second,
@@ -159,7 +186,7 @@ func Check(inContainer, isDSImage bool) *CheckVersionInfo {
 	resp, err := client.Do(req)
 	if resp != nil && resp.Body != nil {
 		defer func() {
-			io.Copy(ioutil.Discard, resp.Body)
+			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}()
 	}

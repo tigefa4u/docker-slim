@@ -1,291 +1,329 @@
+//go:build linux
 // +build linux
 
-package app
+package sensor
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/docker-slim/docker-slim/pkg/app/sensor/ipc"
-	"github.com/docker-slim/docker-slim/pkg/app/sensor/monitors/fanotify"
-	"github.com/docker-slim/docker-slim/pkg/app/sensor/monitors/pevent"
-	"github.com/docker-slim/docker-slim/pkg/app/sensor/monitors/ptrace"
-	"github.com/docker-slim/docker-slim/pkg/ipc/command"
-	"github.com/docker-slim/docker-slim/pkg/ipc/event"
-	"github.com/docker-slim/docker-slim/pkg/report"
-	"github.com/docker-slim/docker-slim/pkg/sysenv"
-	"github.com/docker-slim/docker-slim/pkg/system"
-	"github.com/docker-slim/docker-slim/pkg/util/errutil"
-
 	log "github.com/sirupsen/logrus"
+
+	"github.com/slimtoolkit/slim/pkg/app"
+	"github.com/slimtoolkit/slim/pkg/app/sensor/artifact"
+	"github.com/slimtoolkit/slim/pkg/app/sensor/controlled"
+	"github.com/slimtoolkit/slim/pkg/app/sensor/execution"
+	"github.com/slimtoolkit/slim/pkg/app/sensor/monitor"
+	"github.com/slimtoolkit/slim/pkg/app/sensor/standalone"
+	"github.com/slimtoolkit/slim/pkg/app/sensor/standalone/control"
+	"github.com/slimtoolkit/slim/pkg/appbom"
+	"github.com/slimtoolkit/slim/pkg/ipc/event"
+	"github.com/slimtoolkit/slim/pkg/mondel"
+	"github.com/slimtoolkit/slim/pkg/report"
+	"github.com/slimtoolkit/slim/pkg/sysenv"
+	"github.com/slimtoolkit/slim/pkg/system"
+	"github.com/slimtoolkit/slim/pkg/util/errutil"
+	"github.com/slimtoolkit/slim/pkg/version"
 )
 
-var doneChan chan struct{}
+const (
+	// Execution modes
+	sensorModeControlled = "controlled"
+	sensorModeStandalone = "standalone"
 
-///////////////////////////////////////////////////////////////////////////////
+	// Flags
 
-func getCurrentPaths(root string) (map[string]interface{}, error) {
-	pathMap := map[string]interface{}{}
-	err := filepath.Walk(root,
-		func(pth string, info os.FileInfo, err error) error {
-			if strings.HasPrefix(pth, "/proc/") {
-				log.Debugf("getCurrentPaths: skipping /proc file system objects...")
-				return filepath.SkipDir
-			}
+	getAppBomFlagUsage   = "get sensor application BOM"
+	getAppBomFlagDefault = false
 
-			if strings.HasPrefix(pth, "/sys/") {
-				log.Debugf("getCurrentPaths: skipping /sys file system objects...")
-				return filepath.SkipDir
-			}
+	enableDebugFlagUsage   = "enable debug logging"
+	enableDebugFlagDefault = false
 
-			if strings.HasPrefix(pth, "/dev/") {
-				log.Debugf("getCurrentPaths: skipping /dev file system objects...")
-				return filepath.SkipDir
-			}
+	logLevelFlagUsage   = "set the logging level ('debug', 'info', 'warn', 'error', 'fatal', 'panic')"
+	logLevelFlagDefault = "info"
 
-			if info.Mode().IsRegular() &&
-				!strings.HasPrefix(pth, "/proc/") &&
-				!strings.HasPrefix(pth, "/sys/") &&
-				!strings.HasPrefix(pth, "/dev/") {
-				pth, err := filepath.Abs(pth)
-				if err == nil {
-					pathMap[pth] = nil
-				}
-			}
-			return nil
-		})
+	logFormatFlagUsage   = "set the logging format ('text', or 'json')"
+	logFormatFlagDefault = "text"
 
-	if err != nil {
-		return nil, err
-	}
+	logFileFlagUsage   = "enable logging redirection to a file (allowing to keep sensor's output separate from the target app's output)"
+	logFileFlagDefault = ""
 
-	return pathMap, nil
-}
+	sensorModeFlagUsage   = "set the sensor execution mode ('controlled' when sensor expect the driver 'slim' app to manipulate its lifecycle; or 'standalone' when sensor depends on nothing but the target app"
+	sensorModeFlagDefault = sensorModeControlled
 
-func startMonitor(errorCh chan error,
-	startAckChan chan bool,
-	stopWork chan bool,
-	stopWorkAck chan bool,
-	pids chan []int,
-	ptmonStartChan chan int,
-	cmd *command.StartMonitor,
-	dirName string) bool {
-	origPaths, err := getCurrentPaths("/")
-	if err != nil {
-		errorCh <- err
-		time.Sleep(3 * time.Second) //give error event time to get sent
-	}
+	commandsFileFlagUsage   = "provide a JSONL-encoded file with one ore more sensor commands (standalone mode only)"
+	commandsFileFlagDefault = "/opt/_slim/commands.json"
 
-	errutil.FailOn(err)
+	lifecycleHookCommandFlagUsage   = "set path to an executable that'll be invoked at various sensor lifecycle events (post-start, pre-shutdown, etc)"
+	lifecycleHookCommandFlagDefault = ""
 
-	log.Info("sensor: monitor starting...")
-	mountPoint := "/"
+	// Should stopSignal and stopGracePeriod become StartMonitor
+	// command's fields instead? Hypothetically, in a multi-command
+	// monitoring run, these two params may have different values.
+	stopSignalFlagUsage   = "set the signal to stop the target app (and, eventually, the sensor)"
+	stopSignalFlagDefault = "TERM"
 
-	stopMonitor := make(chan struct{})
+	stopGracePeriodFlagUsage   = "set the time to wait for the graceful termination of the target app (before sensor SIGKILL's it)"
+	stopGracePeriodFlagDefault = 5 * time.Second
 
-	var peReportChan <-chan *report.PeMonitorReport
-	var peReport *report.PeMonitorReport
-	usePEMon, err := system.DefaultKernelFeatures.IsCompiled("CONFIG_PROC_EVENTS")
-	//tmp: disable PEVENTs (due to problems with the new boot2docker host OS)
-	usePEMon = false
-	if (err == nil) && usePEMon {
-		log.Info("sensor: proc events are available!")
-		peReportChan = pevent.Run(stopMonitor)
-		//ProcEvents are not enabled in the default boot2docker kernel
-	}
+	artifactsDirFlagUsage   = "output director for all sensor artifacts"
+	artifactsDirFlagDefault = app.DefaultArtifactsDirPath
 
-	prepareEnv(defaultArtifactDirName, cmd)
-
-	fanReportChan := fanotify.Run(errorCh, mountPoint, stopMonitor, cmd.IncludeNew, origPaths) //data.AppName, data.AppArgs
-	if fanReportChan == nil {
-		log.Info("sensor: startMonitor - FAN failed to start running...")
-		return false
-	}
-	ptReportChan := ptrace.Run(
-		cmd.RTASourcePT,
-		errorCh,
-		startAckChan,
-		ptmonStartChan,
-		stopMonitor,
-		cmd.AppName,
-		cmd.AppArgs,
-		dirName,
-		cmd.AppUser,
-		cmd.RunTargetAsUser,
-		cmd.IncludeNew,
-		origPaths)
-	if ptReportChan == nil {
-		log.Info("sensor: startMonitor - PTAN failed to start running...")
-		close(stopMonitor)
-		return false
-	}
-
-	go func() {
-		log.Debug("sensor: monitor.worker - waiting to stop monitoring...")
-		<-stopWork
-		log.Debug("sensor: monitor.worker - stop message...")
-
-		close(stopMonitor)
-
-		log.Debug("sensor: monitor.worker - processing data...")
-
-		fanReport := <-fanReportChan
-		ptReport := <-ptReportChan
-
-		if peReportChan != nil {
-			peReport = <-peReportChan
-			//TODO: when peReport is available filter file events from fanReport
-		}
-
-		processReports(cmd, mountPoint, origPaths, fanReport, ptReport, peReport)
-		stopWorkAck <- true
-	}()
-
-	return true
-}
-
-/////////
+	enableMondelFlagUsage   = "enable monitor data event logging"
+	enableMondelFlagDefault = false
+)
 
 var (
-	enableDebug  bool
-	logLevelName string
-	logFormat    string
+	getAppBom            *bool          = flag.Bool("appbom", getAppBomFlagDefault, getAppBomFlagUsage)
+	enableDebug          *bool          = flag.Bool("debug", enableDebugFlagDefault, enableDebugFlagUsage)
+	logLevel             *string        = flag.String("log-level", logLevelFlagDefault, logLevelFlagUsage)
+	logFormat            *string        = flag.String("log-format", logFormatFlagDefault, logFormatFlagUsage)
+	logFile              *string        = flag.String("log-file", logFileFlagDefault, logFileFlagUsage)
+	sensorMode           *string        = flag.String("mode", sensorModeFlagDefault, sensorModeFlagUsage)
+	commandsFile         *string        = flag.String("command-file", commandsFileFlagDefault, commandsFileFlagUsage)
+	artifactsDir         *string        = flag.String("artifacts-dir", artifactsDirFlagDefault, artifactsDirFlagUsage)
+	lifecycleHookCommand *string        = flag.String("lifecycle-hook", lifecycleHookCommandFlagDefault, lifecycleHookCommandFlagUsage)
+	stopSignal           *string        = flag.String("stop-signal", stopSignalFlagDefault, stopSignalFlagUsage)
+	stopGracePeriod      *time.Duration = flag.Duration("stop-grace-period", stopGracePeriodFlagDefault, stopGracePeriodFlagUsage)
+	enableMondel         *bool          = flag.Bool("mondel", enableMondelFlagDefault, enableMondelFlagUsage)
+
+	errUnknownMode = errors.New("unknown sensor mode")
 )
 
-func init() {
-	flag.BoolVar(&enableDebug, "d", false, "enable debug logging")
-	flag.StringVar(&logLevelName, "log-level", "info", "set the logging level ('debug', 'info' (default), 'warn', 'error', 'fatal', 'panic')")
-	flag.StringVar(&logFormat, "log-format", "text", "set the format used by logs ('text' (default), or 'json')")
+func eventsFilePath() string {
+	return filepath.Join(*artifactsDir, "events.json")
 }
 
-/////////
+func init() {
+	flag.BoolVar(getAppBom, "b", getAppBomFlagDefault, getAppBomFlagUsage)
+	flag.BoolVar(enableDebug, "d", enableDebugFlagDefault, enableDebugFlagUsage)
+	flag.StringVar(logLevel, "l", logLevelFlagDefault, logLevelFlagUsage)
+	flag.StringVar(logFormat, "f", logFormatFlagDefault, logFormatFlagUsage)
+	flag.StringVar(logFile, "o", logFileFlagDefault, logFileFlagUsage)
+	flag.StringVar(sensorMode, "m", sensorModeFlagDefault, sensorModeFlagUsage)
+	flag.StringVar(commandsFile, "c", commandsFileFlagDefault, commandsFileFlagUsage)
+	flag.StringVar(artifactsDir, "e", artifactsDirFlagDefault, artifactsDirFlagUsage)
+	flag.StringVar(lifecycleHookCommand, "a", lifecycleHookCommandFlagDefault, lifecycleHookCommandFlagUsage)
+	flag.StringVar(stopSignal, "s", stopSignalFlagDefault, stopSignalFlagUsage)
+	flag.DurationVar(stopGracePeriod, "w", stopGracePeriodFlagDefault, stopGracePeriodFlagUsage)
+	flag.BoolVar(enableMondel, "n", enableMondelFlagDefault, enableMondelFlagUsage)
+}
 
 // Run starts the sensor app
 func Run() {
 	flag.Parse()
 
-	err := configureLogger(enableDebug, logLevelName, logFormat)
-	errutil.FailOn(err)
-
-	activeCaps, maxCaps, err := sysenv.Capabilities(0)
-	log.Debugf("sensor: uid=%v euid=%v", os.Getuid(), os.Geteuid())
-	log.Debugf("sensor: privileged => %v", sysenv.IsPrivileged())
-	log.Debugf("sensor: active capabilities => %#v", activeCaps)
-	log.Debugf("sensor: max capabilities => %#v", maxCaps)
-	log.Debugf("sensor: sysinfo => %#v", system.GetSystemInfo())
-	log.Debugf("sensor: kernel flags => %#v", system.DefaultKernelFeatures.Raw)
-
-	log.Infof("sensor: args => %#v", os.Args)
-
-	dirName, err := os.Getwd()
-	errutil.WarnOn(err)
-	log.Debugf("sensor: cwd => %#v", dirName)
-
-	initSignalHandlers()
-	defer func() {
-		log.Debug("deferred cleanup on shutdown...")
-		cleanupOnShutdown()
-	}()
-
-	log.Debug("sensor: setting up channels...")
-	doneChan = make(chan struct{})
-
-	ipcServer, err := ipc.NewServer(doneChan)
-	errutil.FailOn(err)
-
-	err = ipcServer.Run()
-	errutil.FailOn(err)
-
-	cmdChan := ipcServer.CommandChan()
-
-	errorCh := make(chan error)
-	go func() {
-		for {
-			log.Debug("sensor: error collector - waiting for errors...")
-			select {
-			case <-doneChan:
-				log.Debug("sensor: error collector - done...")
-				return
-			case err := <-errorCh:
-				log.Infof("sensor: error collector - forwarding error = %+v", err)
-				ipcServer.TryPublishEvt(&event.Message{Name: event.Error, Data: err}, 3)
-			}
-		}
-	}()
-
-	monStartAckChan := make(chan bool, 3)
-	monDoneChan := make(chan bool, 1)
-	monDoneAckChan := make(chan bool)
-	pidsChan := make(chan []int, 1)
-	ptmonStartChan := make(chan int, 1)
-
-	log.Info("sensor: waiting for commands...")
-doneRunning:
-	for {
-		select {
-		case cmd := <-cmdChan:
-			log.Debug("\nsensor: command => ", cmd)
-			switch data := cmd.(type) {
-			case *command.StartMonitor:
-				if data == nil {
-					log.Info("sensor: 'start' monitor command - no data...")
-					break
-				}
-
-				log.Debugf("sensor: 'start' monitor command (%#v)", data)
-				if data.AppUser != "" {
-					log.Debugf("sensor: 'start' monitor command - run app as user='%s'", data.AppUser)
-				}
-
-				started := startMonitor(errorCh, monStartAckChan, monDoneChan, monDoneAckChan, pidsChan, ptmonStartChan, data, dirName)
-				if !started {
-					log.Info("sensor: monitor not started...")
-					time.Sleep(3 * time.Second) //give error event time to get sent
-					ipcServer.TryPublishEvt(&event.Message{Name: event.StartMonitorFailed}, 3)
-					break
-				}
-
-				//target app started by ptmon... (long story :-))
-				//TODO: need to get the target app pid to pemon, so it can filter process events
-				log.Debugf("sensor: starting target app => %v %#v", data.AppName, data.AppArgs)
-				time.Sleep(3 * time.Second)
-
-				log.Info("sensor: waiting for monitor to complete startup...")
-				started = <-monStartAckChan
-				log.Infof("sensor: monitor started (%v)...", started)
-				msg := &event.Message{Name: event.StartMonitorDone}
-				if !started {
-					msg.Name = event.StartMonitorFailed
-				}
-
-				ipcServer.TryPublishEvt(msg, 3)
-
-			case *command.StopMonitor:
-				log.Info("sensor: 'stop' monitor command")
-
-				monDoneChan <- true
-				log.Info("sensor: waiting for monitor to finish...")
-				<-monDoneAckChan
-				log.Info("sensor: monitor stopped...")
-				ipcServer.TryPublishEvt(&event.Message{Name: event.StopMonitorDone}, 3)
-
-			case *command.ShutdownSensor:
-				log.Info("sensor: 'shutdown' command")
-				close(doneChan)
-				doneChan = nil
-				break doneRunning
-			default:
-				log.Info("sensor: ignoring unknown command => ", cmd)
-			}
-
-		case <-time.After(time.Second * 5):
-			log.Debug(".")
-		}
+	if *getAppBom {
+		dumpAppBom()
+		return
 	}
 
-	ipcServer.TryPublishEvt(&event.Message{Name: event.ShutdownSensorDone}, 3)
-	log.Info("sensor: done!")
+	errutil.FailOn(configureLogger(*enableDebug, *logLevel, *logFormat, *logFile))
+	ctx := context.Background()
+	if len(os.Args) > 1 && os.Args[1] == "control" {
+		if err := runControlCommand(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "Control command failed: "+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+
+	activeCaps, maxCaps, err := sysenv.Capabilities(0)
+	errutil.WarnOn(err)
+
+	sr := &report.SensorReport{
+		Version: version.Current(),
+		Args:    os.Args,
+	}
+
+	log.Infof("sensor: ver=%v", sr.Version)
+	log.Debugf("sensor: args => %#v", sr.Args)
+
+	log.Tracef("sensor: uid=%v euid=%v", os.Getuid(), os.Geteuid())
+	log.Tracef("sensor: privileged => %v", sysenv.IsPrivileged())
+	log.Tracef("sensor: active capabilities => %#v", activeCaps)
+	log.Tracef("sensor: max capabilities => %#v", maxCaps)
+	log.Tracef("sensor: sysinfo => %#v", system.GetSystemInfo())
+	log.Tracef("sensor: kernel flags => %#v", system.DefaultKernelFeatures.Raw)
+
+	var artifactsExtra []string
+	if len(*commandsFile) > 0 {
+		artifactsExtra = append(artifactsExtra, *commandsFile)
+	}
+	if len(*logFile) > 0 {
+		artifactsExtra = append(artifactsExtra, *logFile)
+	}
+	artifactor := artifact.NewProcessor(sr, *artifactsDir, artifactsExtra)
+
+	exe, err := newExecution(
+		ctx,
+		*sensorMode,
+		*commandsFile,
+		eventsFilePath(),
+		*lifecycleHookCommand,
+	)
+	if err != nil {
+		errutil.WarnOn(artifactor.Archive())
+		errutil.FailOn(err) // calls os.Exit(1)
+	}
+
+	mondelFile := filepath.Join(*artifactsDir, report.DefaultMonDelFileName)
+	del := mondel.NewPublisher(ctx, *enableMondel, mondelFile)
+
+	sen, err := newSensor(ctx, exe, *sensorMode, artifactor, del, *artifactsDir)
+	if err != nil {
+		exe.Close()
+		errutil.WarnOn(artifactor.Archive())
+		errutil.FailOn(err) // calls os.Exit(1)
+	}
+
+	if err := sen.Run(); err != nil {
+		log.WithError(err).Error("sensor: run finished with error")
+		if errors.Is(err, monitor.ErrInsufficientPermissions) {
+			log.Info("sensor: Instrumented containers require root and ALL capabilities enabled. Example: `docker run --user root --cap-add ALL app:v1-instrumented`")
+		}
+	} else {
+		log.Info("sensor: run finished succesfully")
+	}
+
+	exe.Close()
+
+	log.Info("sensor: exiting...")
+}
+
+func newExecution(
+	ctx context.Context,
+	mode string,
+	commandsFile string,
+	eventsFile string,
+	lifecycleHookCommand string,
+) (execution.Interface, error) {
+	switch mode {
+	case sensorModeControlled:
+		return execution.NewControlled(ctx, lifecycleHookCommand)
+	case sensorModeStandalone:
+		return execution.NewStandalone(
+			ctx,
+			commandsFile,
+			eventsFile,
+			lifecycleHookCommand,
+		)
+	}
+
+	return nil, errUnknownMode
+}
+
+type sensor interface {
+	Run() error
+}
+
+func newSensor(
+	ctx context.Context,
+	exe execution.Interface,
+	mode string,
+	artifactor artifact.Processor,
+	del mondel.Publisher,
+	artifactsDir string,
+) (sensor, error) {
+	workDir, err := os.Getwd()
+	errutil.WarnOn(err)
+	log.Debugf("sensor: cwd => %s", workDir)
+
+	mountPoint := "/"
+	log.Debugf("sensor: mount point => %s", mountPoint)
+
+	switch mode {
+	case sensorModeControlled:
+		ctx, cancel := context.WithCancel(ctx)
+
+		// To preserve the backward compatibility, don't forward
+		// signals to the target app in the default (controlled) mode.
+		startSystemSignalsMonitor(func() {
+			cancel()
+			time.Sleep(2 * time.Second)
+		})
+
+		return controlled.NewSensor(
+			ctx,
+			exe,
+			monitor.NewCompositeMonitor,
+			del,
+			artifactor,
+			workDir,
+			mountPoint,
+		), nil
+	case sensorModeStandalone:
+		return standalone.NewSensor(
+			ctx,
+			exe,
+			monitor.NewCompositeMonitor,
+			del,
+			artifactor,
+			workDir,
+			mountPoint,
+			signalFromString(*stopSignal),
+			*stopGracePeriod,
+		), nil
+	}
+
+	exe.PubEvent(event.StartMonitorFailed,
+		&event.StartMonitorFailedData{
+			Component: event.ComSensorConstructor,
+			State:     event.StateSensorTypeCreating,
+			Context: map[string]string{
+				event.CtxSensorType: mode,
+			},
+			Errors: []string{errUnknownMode.Error()},
+		})
+	return nil, errUnknownMode
+}
+
+func dumpAppBom() {
+	info := appbom.Get()
+	if info == nil {
+		return
+	}
+
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent(" ", " ")
+	_ = encoder.Encode(info)
+	fmt.Printf("%s\n", out.String())
+}
+
+// sensor control <stop-target-app|wait-for-event|change-log-level|...>
+func runControlCommand(ctx context.Context) error {
+	if len(os.Args) < 3 {
+		return errors.New("missing command")
+	}
+
+	cmd := control.Command(os.Args[2])
+
+	switch cmd {
+	case control.StopTargetAppCommand:
+		if err := control.ExecuteStopTargetAppCommand(ctx, *commandsFile); err != nil {
+			return fmt.Errorf("error stopping target app: %w", err)
+		}
+
+	case control.WaitForEventCommand:
+		if len(os.Args) < 4 {
+			return errors.New("missing event name")
+		}
+		if err := control.ExecuteWaitEvenCommand(ctx, eventsFilePath(), event.Type(os.Args[3])); err != nil {
+			return fmt.Errorf("error waiting for sensor event: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("unknown command: %s", cmd)
+	}
+
+	return nil
 }

@@ -2,6 +2,7 @@ package dockerutil
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -15,7 +16,8 @@ import (
 	dockerapi "github.com/fsouza/go-dockerclient"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/docker-slim/docker-slim/pkg/util/fsutil"
+	"github.com/slimtoolkit/slim/pkg/docker/dockerclient"
+	"github.com/slimtoolkit/slim/pkg/util/fsutil"
 )
 
 var (
@@ -24,10 +26,9 @@ var (
 )
 
 const (
-	dockerHost           = "unix:///var/run/docker.sock"
 	volumeMountPat       = "%s:/data"
 	volumeBasePath       = "/data"
-	emptyImageName       = "docker-slim-empty-image"
+	emptyImageName       = "docker-slim-empty-image:latest"
 	emptyImageDockerfile = "FROM scratch\nCMD\n"
 )
 
@@ -62,18 +63,28 @@ func ImageToIdentity(info *dockerapi.Image) *ImageIdentity {
 		RepoDigests: info.RepoDigests,
 	}
 
+	uniqueTags := map[string]struct{}{}
 	for _, tag := range result.RepoTags {
 		parts := strings.Split(tag, ":")
 		if len(parts) == 2 {
-			result.ShortTags = append(result.ShortTags, parts[1])
+			uniqueTags[parts[1]] = struct{}{}
 		}
 	}
 
+	for k := range uniqueTags {
+		result.ShortTags = append(result.ShortTags, k)
+	}
+
+	uniqueDigests := map[string]struct{}{}
 	for _, digest := range result.RepoDigests {
 		parts := strings.Split(digest, "@")
 		if len(parts) == 2 {
-			result.ShortDigests = append(result.ShortDigests, parts[1])
+			uniqueDigests[parts[1]] = struct{}{}
 		}
+	}
+
+	for k := range uniqueDigests {
+		result.ShortDigests = append(result.ShortDigests, k)
 	}
 
 	return result
@@ -102,7 +113,16 @@ func HasImage(dclient *dockerapi.Client, imageRef string) (*ImageIdentity, error
 
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return nil, fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.HasImage(%s): dockerapi.NewClient() error = %v", imageRef, err)
 			return nil, err
@@ -132,7 +152,16 @@ func ListImages(dclient *dockerapi.Client, imageNameFilter string) (map[string]B
 	// * <- all image names with no/default namespace. note that no images with namespaces will be returned
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return nil, fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.ListImages(%s): dockerapi.NewClient() error = %v", imageNameFilter, err)
 			return nil, err
@@ -180,9 +209,19 @@ func ListImages(dclient *dockerapi.Client, imageNameFilter string) (map[string]B
 }
 
 func BuildEmptyImage(dclient *dockerapi.Client) error {
-	var err error
+	//TODO: use the 'internal' build engine that doesn't need Docker
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		//note: shouldn't use ":=" here to avoid var shadowing
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.BuildEmptyImage: dockerapi.NewClient() error = %v", err)
 			return err
@@ -217,7 +256,7 @@ func BuildEmptyImage(dclient *dockerapi.Client) error {
 		ForceRmTmpContainer: true,
 	}
 	if err := dclient.BuildImage(buildOptions); err != nil {
-		log.Errorf("dockerutil.BuildEmptyImage: dockerapi.BuildImage() error = %v", err)
+		log.Errorf("dockerutil.BuildEmptyImage: dockerapi.BuildImage() error = %v / output: %s", err, output.String())
 		return err
 	}
 
@@ -231,7 +270,16 @@ func SaveImage(dclient *dockerapi.Client, imageRef, local string, extract, remov
 
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.SaveImage: dockerapi.NewClient() error = %v", err)
 			return err
@@ -283,9 +331,14 @@ func SaveImage(dclient *dockerapi.Client, imageRef, local string, extract, remov
 
 		tarOptions := &archive.TarOptions{
 			NoLchown: true,
-			UIDMaps:  arc.IDMapping.UIDs(),
-			GIDMaps:  arc.IDMapping.GIDs(),
+			//UIDMaps:  arc.IDMapping.UIDs(),
+			//GIDMaps:  arc.IDMapping.GIDs(),
+
 		}
+
+		tarOptions.IDMap.UIDMaps = arc.IDMapping.UIDMaps
+		tarOptions.IDMap.GIDMaps = arc.IDMapping.GIDMaps
+
 		err = arc.Untar(afile, dstDir, tarOptions)
 		if err != nil {
 			log.Errorf("dockerutil.SaveImage: error unpacking tar - %v", err)
@@ -303,6 +356,66 @@ func SaveImage(dclient *dockerapi.Client, imageRef, local string, extract, remov
 	return nil
 }
 
+type VolumeInfo struct {
+	Created    time.Time
+	Mountpoint string
+	Size       uint64
+	FileCount  uint64
+}
+
+func GetVolumeInfo(dclient *dockerapi.Client, name string, fileCount bool) (*VolumeInfo, error) {
+	if name == "" {
+		return nil, ErrBadParam
+	}
+
+	var err error
+	if dclient == nil {
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return nil, fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
+		if err != nil {
+			log.Errorf("dockerutil.GetVolumeInfo: dockerapi.NewClient() error = %v", err)
+			return nil, err
+		}
+	}
+
+	volume, err := dclient.InspectVolume(name)
+	if err != nil {
+		log.Errorf("dockerutil.GetVolumeInfo: dclient.InspectVolume() error = %v", err)
+		return nil, err
+	}
+
+	info := &VolumeInfo{
+		Created:    volume.CreatedAt,
+		Mountpoint: volume.Mountpoint,
+	}
+
+	return info, nil
+}
+
+func ListVolumeFiles(dclient *dockerapi.Client, name string) ([]string, error) {
+	if name == "" {
+		return nil, ErrBadParam
+	}
+
+	return nil, nil
+}
+
+func VolumePathExists(dclient *dockerapi.Client, volume string, pth string) (bool, error) {
+	if volume == "" || pth == "" {
+		return false, ErrBadParam
+	}
+
+	return false, nil
+}
+
 func HasVolume(dclient *dockerapi.Client, name string) error {
 	if name == "" {
 		return ErrBadParam
@@ -310,7 +423,16 @@ func HasVolume(dclient *dockerapi.Client, name string) error {
 
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.HasVolume: dockerapi.NewClient() error = %v", err)
 			return err
@@ -346,9 +468,18 @@ func DeleteVolume(dclient *dockerapi.Client, name string) error {
 		return ErrBadParam
 	}
 
-	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		//note: shouldn't use ":=" here to avoid var shadowing
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.DeleteVolume: dockerapi.NewClient() error = %v", err)
 			return err
@@ -372,10 +503,24 @@ func DeleteVolume(dclient *dockerapi.Client, name string) error {
 	return nil
 }
 
-func CopyToVolume(dclient *dockerapi.Client, volumeName, source, dstRootDir, dstTargetDir string) error {
+func CopyToVolume(
+	dclient *dockerapi.Client,
+	volumeName string,
+	source string,
+	dstRootDir string,
+	dstTargetDir string) error {
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.CopyToVolume: dockerapi.NewClient() error = %v", err)
 			return err
@@ -416,7 +561,20 @@ func CopyToVolume(dclient *dockerapi.Client, volumeName, source, dstRootDir, dst
 		}
 	}
 
-	tarData, err := archive.Tar(source, archive.Uncompressed)
+	cleanSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		log.Errorf("dockerutil.CopyToVolume: filepath.EvalSymlinks(%s) error = %v", source, err)
+		rmContainer()
+		return err
+	}
+
+	if fsutil.IsSymlink(cleanSource) {
+		log.Errorf("dockerutil.CopyToVolume: source is a symlink = %s", cleanSource)
+		rmContainer()
+		return fmt.Errorf("source is symlink")
+	}
+
+	tarData, err := archive.Tar(cleanSource, archive.Uncompressed)
 	if err != nil {
 		log.Errorf("dockerutil.CopyToVolume: archive.Tar() error = %v", err)
 		rmContainer()
@@ -504,7 +662,11 @@ func GenStateDirsTar(rootDir, stateDir string) (io.Reader, error) {
 	return &b, nil
 }
 
-func CreateVolumeWithData(dclient *dockerapi.Client, source, name string, labels map[string]string) error {
+func CreateVolumeWithData(
+	dclient *dockerapi.Client,
+	source string,
+	name string,
+	labels map[string]string) error {
 	if name == "" {
 		return ErrBadParam
 	}
@@ -518,7 +680,16 @@ func CreateVolumeWithData(dclient *dockerapi.Client, source, name string, labels
 
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.CreateVolumeWithData: dockerapi.NewClient() error = %v", err)
 			return err
@@ -552,7 +723,16 @@ func CopyFromContainer(dclient *dockerapi.Client, containerID, remote, local str
 
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.CopyFromContainer: dockerapi.NewClient() error = %v", err)
 			return err
@@ -591,9 +771,13 @@ func CopyFromContainer(dclient *dockerapi.Client, containerID, remote, local str
 
 		tarOptions := &archive.TarOptions{
 			NoLchown: true,
-			UIDMaps:  arc.IDMapping.UIDs(),
-			GIDMaps:  arc.IDMapping.GIDs(),
+			//UIDMaps:  arc.IDMapping.UIDs(),
+			//GIDMaps:  arc.IDMapping.GIDs(),
 		}
+
+		tarOptions.IDMap.UIDMaps = arc.IDMapping.UIDMaps
+		tarOptions.IDMap.GIDMaps = arc.IDMapping.GIDMaps
+
 		err = arc.Untar(afile, dstDir, tarOptions)
 		if err != nil {
 			log.Errorf("dockerutil.CopyFromContainer: error unpacking tar - %v", err)
@@ -692,7 +876,16 @@ func PrepareContainerDataArchive(fullPath, newName, removePrefix string, removeO
 func ListNetworks(dclient *dockerapi.Client, nameFilter string) ([]string, error) {
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return nil, fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.ListNetworks(%s): dockerapi.NewClient() error = %v", nameFilter, err)
 			return nil, err
@@ -722,7 +915,16 @@ func ListNetworks(dclient *dockerapi.Client, nameFilter string) ([]string, error
 func ListVolumes(dclient *dockerapi.Client, nameFilter string) ([]string, error) {
 	var err error
 	if dclient == nil {
-		dclient, err = dockerapi.NewClient(dockerHost)
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return nil, fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
 		if err != nil {
 			log.Errorf("dockerutil.ListVolumes(%s): dockerapi.NewClient() error = %v", nameFilter, err)
 			return nil, err
@@ -747,4 +949,129 @@ func ListVolumes(dclient *dockerapi.Client, nameFilter string) ([]string, error)
 	}
 
 	return names, nil
+}
+
+////////
+
+const (
+	CSCreated    = "created"
+	CSRestarting = "restarting"
+	CSRunning    = "running"
+	CSRemoving   = "removing"
+	CSPaused     = "paused"
+	CSExited     = "exited"
+	CSDead       = "dead"
+)
+
+type BasicContainerProps struct {
+	Name    string
+	Names   []string //names have "/" as the prefix
+	ID      string
+	Image   string //'spec' image ref (inspect to get the exact image ID)
+	Created int64
+	State   string
+	Status  string //e.g., "Up X seconds"
+	Command string //Entrypoint+Cmd in the shell format
+}
+
+func ListContainers(dclient *dockerapi.Client, nameFilter string, all bool) (map[string]BasicContainerProps, error) {
+	var err error
+	if dclient == nil {
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return nil, err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return nil, fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
+		if err != nil {
+			log.Errorf("dockerutil.ListContainers(%s): dockerapi.NewClient() error = %v", nameFilter, err)
+			return nil, err
+		}
+	}
+
+	listOptions := dockerapi.ListContainersOptions{
+		All: all, //if 'all' then also non-running containers are returned
+	}
+
+	if nameFilter != "" {
+		listOptions.Filters = map[string][]string{
+			"name": {nameFilter},
+		}
+	}
+
+	//note: will need to call 'inspect' to get additional container fields
+	containerList, err := dclient.ListContainers(listOptions)
+	if err != nil {
+		log.Errorf("dockerutil.ListContainers(%s): dockerapi.ListContainers() error = %v", nameFilter, err)
+		return nil, err
+	}
+
+	containers := map[string]BasicContainerProps{}
+	for _, containerInfo := range containerList {
+		var name string
+		if len(containerInfo.Names) > 0 {
+			name = strings.TrimPrefix(containerInfo.Names[0], "/")
+		}
+
+		info := BasicContainerProps{
+			Name:    name,
+			Names:   containerInfo.Names,
+			ID:      containerInfo.ID,
+			Created: containerInfo.Created,
+			Image:   containerInfo.Image,
+			State:   containerInfo.State,
+			Status:  containerInfo.Status,
+			Command: containerInfo.Command,
+		}
+
+		containers[name] = info
+	}
+
+	return containers, nil
+}
+
+func GetContainerLogs(dclient *dockerapi.Client, containerID string, rawTerminal bool) (string, string, error) {
+	var err error
+	if dclient == nil {
+		socketInfo, err := dockerclient.GetUnixSocketAddr()
+		if err != nil {
+			return "", "", err
+		}
+
+		if socketInfo == nil || socketInfo.Address == "" {
+			return "", "", fmt.Errorf("no unix socket found")
+		}
+
+		dclient, err = dockerapi.NewClient(socketInfo.Address)
+		if err != nil {
+			log.Errorf("dockerutil.GetContainerLogs(%s): dockerapi.NewClient() error = %v", containerID, err)
+			return "", "", err
+		}
+	}
+
+	var outData bytes.Buffer
+	outw := bufio.NewWriter(&outData)
+	var errData bytes.Buffer
+	errw := bufio.NewWriter(&errData)
+
+	options := dockerapi.LogsOptions{
+		Container:    containerID,
+		OutputStream: outw,
+		ErrorStream:  errw,
+		Stdout:       true,
+		Stderr:       true,
+		RawTerminal:  rawTerminal,
+	}
+
+	err = dclient.Logs(options)
+	if err != nil {
+		log.Errorf("error getting container logs => %v - %v", containerID, err)
+		return "", "", err
+	}
+
+	return outData.String(), errData.String(), nil
 }
